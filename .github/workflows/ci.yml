@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            .pio
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Native unit + closed-loop regression tests
+        run: pio test -e native
+
+      - name: Build simulator and run smoke scenarios
+        run: |
+          pio run -e native
+          for s in cold_start espresso maxdraw flush full; do
+            .pio/build/native/program --scenario "$s" --csv /dev/null
+          done
+
+      - name: Build ESP32-C3 firmware
+        run: pio run -e esp32c3

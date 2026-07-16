@@ -1,0 +1,15 @@
+# PlatformIO
+.pio/
+.vscode/
+
+# Real credentials (template: src/secrets.h.example)
+src/secrets.h
+
+# Simulation / tuning output
+*.csv
+!docs/**/*.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
