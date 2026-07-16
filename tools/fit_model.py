@@ -51,7 +51,7 @@ EXPECT_SIM = {
 
 
 def parse_capture(fp):
-    rows, events, meta = [], [], {"ambient": None, "params": {}}
+    rows, events, meta = [], [], {"ambient": None, "params": {}, "marks": []}
     header = None
     for raw in fp:
         line = raw.strip()
@@ -62,6 +62,9 @@ def parse_capture(fp):
             tag = parts[0]
             if tag == "#AMBIENT" and len(parts) > 1:
                 meta["ambient"] = float(parts[1])
+            elif tag == "#MARK" and len(parts) > 2:
+                meta["marks"].append({"t": float(parts[1]) / 1000.0,
+                                      "label": " ".join(parts[2:])})
             elif tag == "#EVT" and len(parts) > 2:
                 # args live in their own dict — the duration arg is also
                 # named "t" and must not clobber the event timestamp
@@ -233,6 +236,131 @@ def fit(rows, events, meta, cg):
     return out
 
 
+def _find_mark(meta, label):
+    for m in meta["marks"]:
+        if label in m["label"]:
+            return m
+    return None
+
+
+def validate(rows, events, meta, scenario, cg):
+    """Per-scenario capture quality gate for the tuning wizard.
+
+    Returns {"ok": bool, "scenario": str, "reasons": [..], "metrics": {..}}.
+    The metrics double as the closed-loop verification report (targets in
+    docs/adrc.md)."""
+    reasons, metrics = [], {}
+    scenario = "bigdraw" if scenario == "maxdraw" else scenario
+
+    # common checks
+    if meta["ambient"] is None:
+        reasons.append("missing #AMBIENT line")
+    if len(rows) < 100:
+        reasons.append(f"only {len(rows)} CSV rows")
+    else:
+        if any(r["state"] == "FAULT" for r in rows):
+            reasons.append("FAULT state present in capture")
+        if not all(-5.0 < r["boiler"] < 150.0 for r in rows):
+            reasons.append("implausible boiler temperatures")
+
+    def done():
+        return {"ok": not reasons, "scenario": scenario,
+                "reasons": reasons, "metrics": metrics}
+
+    if reasons:
+        return done()
+
+    setpoint = rows[-1]["set"]
+    t_end = rows[-1]["t"]
+
+    if scenario in ("cold_start", "first_heatup"):
+        if rows[0]["boiler"] > 40.0:
+            reasons.append(f"not a cold start (begins at {rows[0]['boiler']:.0f}C)")
+        if not any(r["state"] == "reg" for r in rows):
+            reasons.append("never reached regulation")
+        t_ready = next((r["t"] for r in rows if r["group"] >= setpoint - 1.0), None)
+        if t_ready is None:
+            reasons.append("group never got within 1C of setpoint")
+        else:
+            metrics["time_to_ready_s"] = round(t_ready - rows[0]["t"], 1)
+        metrics["group_overshoot_C"] = round(
+            max(r["group"] for r in rows) - setpoint, 2)
+        tail = [r for r in rows if r["t"] > t_end - 300.0]
+        metrics["steady_band_C"] = round(
+            max(abs(r["group"] - setpoint) for r in tail), 2)
+
+    elif scenario == "ident":
+        try:
+            out = fit(rows, events, meta, cg)
+        except SystemExit as e:
+            reasons.append(str(e))
+            return done()
+        for key in ("C_total", "b0", "k_lumped", "lag"):
+            v = out.get(key)
+            if v is None or math.isnan(v):
+                reasons.append(f"fit produced no {key}")
+        cc, cs = out.get("C_from_cooling"), out.get("C_from_step")
+        if cc and cs and (cc <= 0 or cs <= 0 or
+                          abs(cc - cs) / max(cc, cs) > 0.35):
+            reasons.append(
+                f"C estimates disagree (cooling {cc:.0f} vs step {cs:.0f})")
+        metrics.update({k: round(v, 3) for k, v in out.items()
+                        if isinstance(v, float) and not math.isnan(v)})
+
+    elif scenario == "setpoint_step":
+        sets = [r["set"] for r in rows]
+        if max(sets) - min(sets) < 2.0:
+            reasons.append("setpoint never stepped by >=2C")
+        else:
+            # last upward change of the setpoint column
+            t_step = next(
+                (rows[i]["t"] for i in range(len(rows) - 1, 0, -1)
+                 if rows[i]["set"] > rows[i - 1]["set"]), None)
+            if t_step is None:
+                reasons.append("no upward setpoint step found")
+            else:
+                after = [r for r in rows if r["t"] >= t_step]
+                metrics["overshoot_C"] = round(
+                    max(r["boiler"] - r["boiler_set"] for r in after), 2)
+                out_of_band = [r["t"] for r in after
+                               if abs(r["boiler"] - r["boiler_set"]) > 0.5]
+                metrics["settle_s"] = round(
+                    (out_of_band[-1] - t_step) if out_of_band else 0.0, 1)
+
+    elif scenario in ("espresso", "flush", "bigdraw"):
+        m = _find_mark(meta, scenario)
+        if m is None:
+            reasons.append(f"no #MARK containing '{scenario}'")
+            return done()
+        pre = [r for r in rows if m["t"] - 60.0 <= r["t"] < m["t"]]
+        post = [r for r in rows if m["t"] <= r["t"] <= m["t"] + 300.0]
+        if len(pre) < 10 or len(post) < 50:
+            reasons.append("not enough data around the mark")
+            return done()
+        z2_before = mean([r["z2"] for r in pre])
+        z2_min = min(r["z2"] for r in post)
+        duty_max = max(r["duty"] for r in post)
+        if z2_before - z2_min < 0.03 and duty_max < 0.5:
+            reasons.append("no visible draw response after the mark")
+        metrics["group_dip_C"] = round(
+            setpoint - min(r["group"] for r in post), 2)
+        band = 1.0 if scenario == "bigdraw" else 0.5
+        out_of_band = [r["t"] for r in post
+                       if abs(r["group"] - setpoint) > band]
+        metrics[f"recovery_to_{band}C_s"] = round(
+            (out_of_band[-1] - m["t"]) if out_of_band else 0.0, 1)
+        metrics["draw_detected"] = any(r["draw"] for r in post)
+        if scenario == "bigdraw":
+            sat = next((r["t"] - m["t"] for r in post if r["duty"] >= 0.99), None)
+            metrics["duty_saturation_latency_s"] = (
+                round(sat, 1) if sat is not None else None)
+
+    else:
+        reasons.append(f"unknown scenario '{scenario}'")
+
+    return done()
+
+
 def report(out, meta):
     print("== fit_model report ==")
     if meta["params"]:
@@ -269,10 +397,20 @@ def main():
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     ap.add_argument("--expect-sim", action="store_true",
                     help="assert fits recover the simulator's known constants")
+    ap.add_argument("--validate", metavar="SCENARIO",
+                    help="quality-gate the capture for a scenario "
+                         "(cold_start ident setpoint_step espresso flush "
+                         "bigdraw); prints JSON, exit 1 if not ok")
     args = ap.parse_args()
 
     fp = sys.stdin if args.capture == "-" else open(args.capture)
     rows, events, meta = parse_capture(fp)
+
+    if args.validate:
+        verdict = validate(rows, events, meta, args.validate, args.cg)
+        print(json.dumps(verdict, indent=2))
+        sys.exit(0 if verdict["ok"] else 1)
+
     out = fit(rows, events, meta, args.cg)
 
     if args.json:

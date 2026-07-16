@@ -88,6 +88,12 @@ validated in CI against the simulator's known truth
 (`--scenario ident --serial-format`), so the tooling is proven before it
 touches the machine.
 
+For a fully guided session, run the **`/tune-wizard`** skill in Claude Code:
+it walks you through the whole scenario suite at the machine (cold start,
+ident, setpoint step, espresso, flush, big draw), runs the captures as
+background tasks, injects scenario markers into the live recording, validates
+every capture, and ends with the retune — pausing before anything is flashed.
+
 ## Repository layout
 
 ```

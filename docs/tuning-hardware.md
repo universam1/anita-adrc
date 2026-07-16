@@ -1,5 +1,10 @@
 # Hardware tuning playbook
 
+> **Prefer the wizard.** In Claude Code, run **`/tune-wizard`** — it walks
+> you through every scenario below at the machine, runs and validates all
+> captures itself, and finishes with the retune (pausing before flash). This
+> document is the reference for what the wizard does and for manual runs.
+
 The controller defaults were derived from the simulated boiler model
 ([adrc.md](adrc.md)). This playbook makes the model match *your* machine:
 
@@ -31,6 +36,23 @@ Identification overrides run **with the SafetyMonitor fully armed** — any
 fault (overtemp, NTC, no-rise) cancels the experiment and forces the SSR off.
 The `NoRise` check judges the *delivered* duty, so a deliberate `id off` or a
 `set cap` never false-trips it.
+
+While `tune_capture.py` is recording it also polls a sidecar **control file**
+(`<capture>.ctl`, or `--ctl <path>`): every new line appended there is sent
+to the device verbatim, and the literal line `STOP` ends the capture. This is
+how the `/tune-wizard` skill injects `mark`/`set` commands mid-capture
+without a second serial connection:
+
+```
+echo "mark espresso" >> captures/20260716-....ctl
+echo "STOP"          >> captures/20260716-....ctl
+```
+
+Other wizard-facing flags: `--duration <s>` (auto-stop, mandatory for
+background runs), `--status-json <path>` (health summary on exit), and
+`--replay <log>` (stream an existing log through the identical code path —
+CI and dry runs, no hardware). Capture quality is checked per scenario with
+`fit_model.py <capture> --validate <scenario>` (JSON verdict + metrics).
 
 ## Step by step
 

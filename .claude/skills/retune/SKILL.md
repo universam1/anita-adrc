@@ -11,7 +11,8 @@ fails in a way the instructions don't cover.
 
 ## Inputs
 
-The user names a capture file, otherwise use the newest `captures/*.log`.
+The user (or the `/tune-wizard` skill, which invokes this procedure as its
+final step) names a capture file; otherwise use the newest `captures/*.log`.
 If there are no captures, stop and point at `docs/tuning-hardware.md` step 4.
 
 ## Steps

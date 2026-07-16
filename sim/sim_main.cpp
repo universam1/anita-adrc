@@ -58,6 +58,19 @@ struct Overrides {
 // --serial-format: mimic the firmware's serial stream on stdout.
 bool gSerialFormat = false;
 
+void printStreamMeta(SimHarness& h) {
+    std::printf("#AMBIENT %.1f\n",
+                static_cast<double>(h.model().params().tAmbC));
+    const auto& ap = h.core().config().adrc;
+    std::printf("#PARAMS 0 b0=%.3f wc=%.4f wo=%.4f pred=%.1f kboost=%.2f "
+                "cap=1.00 offset=%.2f setpoint=%.1f\n",
+                static_cast<double>(ap.b0), static_cast<double>(ap.wc),
+                static_cast<double>(ap.wo), static_cast<double>(ap.predS),
+                static_cast<double>(h.core().groupComp().params().kBoost),
+                static_cast<double>(h.core().groupComp().offsetSs()),
+                static_cast<double>(h.core().setpoint()));
+}
+
 std::function<void(const SimHarness::Snapshot&)> serialLogger(ControllerCore& core) {
     std::printf(
         "millis,boiler,group,set,boiler_set,duty,z1,z2,boost,offset,state,draw\n");
@@ -70,22 +83,23 @@ std::function<void(const SimHarness::Snapshot&)> serialLogger(ControllerCore& co
     };
 }
 
+// Start a draw, emitting the same #MARK line the user would inject with
+// tune_capture.py when --serial-format is active.
+void markedDraw(SimHarness& h, const char* label, float ml, float seconds) {
+    if (gSerialFormat) {
+        std::printf("#MARK %lu %s\n",
+                    static_cast<unsigned long>(h.nowS() * 1000.0f), label);
+    }
+    h.model().startDraw(ml, seconds);
+}
+
 int runIdent(SimHarness& h) {
-    const auto& mp = h.model().params();
-    auto log = serialLogger(h.core());
     const auto evt = [&](const char* fmt, double a = 0, double b = 0) {
         std::printf(fmt, static_cast<unsigned long>(h.nowS() * 1000.0f), a, b);
     };
 
-    std::printf("#AMBIENT %.1f\n", static_cast<double>(mp.tAmbC));
-    const auto& ap = h.core().config().adrc;
-    std::printf("#PARAMS 0 b0=%.3f wc=%.4f wo=%.4f pred=%.1f kboost=%.2f "
-                "cap=1.00 offset=%.2f setpoint=%.1f\n",
-                static_cast<double>(ap.b0), static_cast<double>(ap.wc),
-                static_cast<double>(ap.wo), static_cast<double>(ap.predS),
-                static_cast<double>(h.core().groupComp().params().kBoost),
-                static_cast<double>(h.core().groupComp().offsetSs()),
-                static_cast<double>(h.core().setpoint()));
+    printStreamMeta(h);
+    auto log = serialLogger(h.core());
 
     h.run(900.0f, log);  // settle in regulation: gives duty_ss + T_ss
 
@@ -126,29 +140,35 @@ int runScenario(const std::string& name, const Overrides& ov) {
         (name == "espresso" || name == "maxdraw" || name == "ident");
     SimHarness h(cfg, BoilerModelParams{}, fromSteady ? 90.0f : 20.0f);
     if (name == "ident") return runIdent(h);
-    auto log = logger(h.core());
+    std::function<void(const SimHarness::Snapshot&)> log;
+    if (gSerialFormat) {
+        printStreamMeta(h);
+        log = serialLogger(h.core());
+    } else {
+        log = logger(h.core());
+    }
 
     if (name == "cold_start" || name == "cold_start_noboost") {
         h.run(2400.0f, log);
     } else if (name == "espresso") {
         h.run(900.0f, log);  // settle
-        h.model().startDraw(30.0f, 30.0f);
+        markedDraw(h, "espresso", 30.0f, 30.0f);
         h.run(300.0f, log);
     } else if (name == "maxdraw") {
         h.run(900.0f, log);
-        h.model().startDraw(250.0f, 30.0f);
+        markedDraw(h, "bigdraw", 250.0f, 30.0f);
         h.run(600.0f, log);
     } else if (name == "flush") {
         h.run(300.0f, log);  // mid warm-up
-        h.model().startDraw(60.0f, 15.0f);
+        markedDraw(h, "flush", 60.0f, 15.0f);
         h.run(600.0f, log);
     } else if (name == "full") {
         h.run(2400.0f, log);  // cold start to ready
-        h.model().startDraw(30.0f, 30.0f);  // espresso
+        markedDraw(h, "espresso", 30.0f, 30.0f);
         h.run(300.0f, log);
-        h.model().startDraw(60.0f, 15.0f);  // flush
+        markedDraw(h, "flush", 60.0f, 15.0f);
         h.run(300.0f, log);
-        h.model().startDraw(250.0f, 30.0f);  // two big cups
+        markedDraw(h, "bigdraw", 250.0f, 30.0f);
         h.run(600.0f, log);
     } else {
         std::fprintf(stderr, "unknown scenario: %s\n", name.c_str());

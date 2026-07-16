@@ -41,5 +41,27 @@ jobs:
           .pio/build/native/program --scenario ident --serial-format \
             | python tools/fit_model.py - --expect-sim
 
+      - name: Capture replay + ctl injection + scenario validation
+        run: |
+          .pio/build/native/program --scenario ident --serial-format > ident.log
+          .pio/build/native/program --scenario full --serial-format > full.log
+          # replay through tune_capture's code path, then fit the result
+          python tools/tune_capture.py --replay ident.log --name ci_replay \
+            --status-json status.json < /dev/null
+          python tools/fit_model.py captures/*-ci_replay.log --expect-sim
+          grep -q '"stop_reason": "replay-exhausted"' status.json
+          # ctl-file injection: mark must land in the capture, STOP must stop
+          printf 'mark ctltest\nSTOP\n' > inject.ctl
+          python tools/tune_capture.py --replay ident.log --name ci_ctl \
+            --ctl inject.ctl --status-json ctl_status.json < /dev/null
+          grep -q "ctltest" captures/*-ci_ctl.log
+          grep -q '"stop_reason": "ctl-stop"' ctl_status.json
+          # scenario quality gates against sim captures
+          python tools/fit_model.py ident.log --validate ident
+          python tools/fit_model.py full.log --validate cold_start
+          python tools/fit_model.py full.log --validate espresso
+          python tools/fit_model.py full.log --validate flush
+          python tools/fit_model.py full.log --validate bigdraw
+
       - name: Build ESP32-C3 firmware
         run: pio run -e esp32c3

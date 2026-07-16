@@ -15,5 +15,7 @@ __pycache__/
 .venv/
 venv/
 
-# Tuning captures (keep local; large)
+# Tuning captures (keep local; large) + wizard runtime files
 captures/*.log
+captures/*.ctl
+captures/*.json
