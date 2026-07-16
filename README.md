@@ -10,15 +10,15 @@ extended state observer estimates everything not modelled (heat loss, water
 draws, sensor lag) as one live disturbance signal and cancels it every cycle.
 
 ```mermaid
-flowchart LR
+flowchart TB
     SP["user setpoint = GROUP temp<br/>85–98 °C, 0.5 °C steps"] --> GC
     NTCG["group NTC"] --> GC
     NTCB["boiler NTC"] --> ADRC
     GC["GroupComp<br/>offset_ss + k·ΔT boost<br/>ceiling 101 °C"] -->|boiler setpoint| ADRC["ADRC<br/>LESO + P"]
     ADRC -->|"duty [0..1]"| MOD["SsrModulator<br/>COT-PFM, 10 ms half-waves"]
-    MOD --> SSR["SSR<br/>zero-cross, active-low"] --> EL["1000 W element"]
     ADRC -->|z2 disturbance estimate| DD["DrawDetector"]
     DD -.->|full-duty feedforward during draws| MOD
+    MOD --> SSR["SSR<br/>zero-cross, active-low"] --> EL["1000 W element"]
 ```
 
 ## Highlights

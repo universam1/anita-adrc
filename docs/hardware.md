@@ -54,8 +54,9 @@ until power-cycled.
 ## NTC dividers — high-side topology
 
 ```mermaid
-flowchart LR
-    V33(["3V3"]) --- NTC["NTC 3950<br/>100 kΩ"] --- NODE((" ")) --- RS["10 kΩ 0.1 %"] --- GND(["GND"])
+flowchart TB
+    V33(["3V3"]) --- NTC["NTC 3950<br/>100 kΩ"] --- NODE((" "))
+    NODE --- RS["10 kΩ 0.1 %"] --- GND(["GND"])
     NODE --> ADC(["GPIO3 boiler<br/>GPIO4 group"])
 ```
 
