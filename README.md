@@ -9,19 +9,16 @@ running **Active Disturbance Rejection Control**: a first-order LADRC whose
 extended state observer estimates everything not modelled (heat loss, water
 draws, sensor lag) as one live disturbance signal and cancels it every cycle.
 
-```
- user setpoint = GROUP temp (85–98 °C, 0.5 °C steps)
-        │
-        ▼
- ┌─────────────┐  boiler setpoint   ┌──────────┐  duty   ┌──────────────┐
- │  GroupComp   │──────────────────▶│   ADRC   │────────▶│ SsrModulator │─▶ SSR ─▶ 1000 W
- │ ΔT boost +   │ (+offset +k·ΔT,   │ LESO + P │  [0..1] │ COT-PFM,     │   (zero-cross,
- │ learned offs │  ceiling 101 °C)  └────┬─────┘         │ 10 ms ticks  │    active-low)
- └──────▲───────┘                        │ z2            └──────────────┘
-        │ group NTC                      ▼
-        │                          ┌────────────┐
-   boiler NTC ────────────────────▶│DrawDetector│─▶ full-duty feedforward
-                                   └────────────┘   during draws
+```mermaid
+flowchart LR
+    SP["user setpoint = GROUP temp<br/>85–98 °C, 0.5 °C steps"] --> GC
+    NTCG["group NTC"] --> GC
+    NTCB["boiler NTC"] --> ADRC
+    GC["GroupComp<br/>offset_ss + k·ΔT boost<br/>ceiling 101 °C"] -->|boiler setpoint| ADRC["ADRC<br/>LESO + P"]
+    ADRC -->|"duty [0..1]"| MOD["SsrModulator<br/>COT-PFM, 10 ms half-waves"]
+    MOD --> SSR["SSR<br/>zero-cross, active-low"] --> EL["1000 W element"]
+    ADRC -->|z2 disturbance estimate| DD["DrawDetector"]
+    DD -.->|full-duty feedforward during draws| MOD
 ```
 
 ## Highlights

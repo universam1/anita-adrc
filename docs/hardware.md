@@ -29,12 +29,12 @@
 
 ## SSR drive — active-low current sinking
 
-```
-3V3 ──────────────┐
-                  │ (SSR input +)
-                [SSR LED]
-                  │ (SSR input −)
-GPIO10 ───────────┘   ESP32 sinks current to fire
+```mermaid
+flowchart TB
+    V33(["3V3"]) --> P["SSR input +"]
+    P --- LED["SSR input LED"]
+    LED --- N["SSR input −"]
+    N --> GPIO(["GPIO10<br/>ESP32 sinks current to fire"])
 ```
 
 The GPIO **sinks** the SSR input from 3.3 V:
@@ -53,10 +53,10 @@ until power-cycled.
 
 ## NTC dividers — high-side topology
 
-```
-3V3 ──[ NTC 100k ]──┬──[ 10k 0.1% ]── GND
-                    │
-              GPIO3 (boiler) / GPIO4 (group)
+```mermaid
+flowchart LR
+    V33(["3V3"]) --- NTC["NTC 3950<br/>100 kΩ"] --- NODE((" ")) --- RS["10 kΩ 0.1 %"] --- GND(["GND"])
+    NODE --> ADC(["GPIO3 boiler<br/>GPIO4 group"])
 ```
 
 Node voltage *rises* with temperature:
