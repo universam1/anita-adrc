@@ -8,9 +8,27 @@ Usage:
 """
 
 import argparse
+import pathlib
 
+import matplotlib
 import matplotlib.pyplot as plt
 import pandas as pd
+
+
+def show_or_save(fig, save: str | None, csv_path: str) -> None:
+    """plt.show(), unless there is no GUI backend (headless/WSL without a
+    display toolkit) — then fall back to writing a PNG next to the CSV."""
+    if save:
+        fig.savefig(save, dpi=130)
+        print(f"wrote {save}")
+        return
+    if matplotlib.get_backend().lower() in ("agg", "pdf", "ps", "svg", "template"):
+        out = str(pathlib.Path(csv_path).with_suffix(".png"))
+        fig.savefig(out, dpi=130)
+        print(f"no interactive matplotlib backend available -> wrote {out}")
+        print("(for live windows: pip install PyQt6)")
+        return
+    plt.show()
 
 
 def main() -> None:
@@ -54,11 +72,7 @@ def main() -> None:
 
     fig.suptitle(args.csv)
     fig.tight_layout()
-    if args.save:
-        fig.savefig(args.save, dpi=130)
-        print(f"wrote {args.save}")
-    else:
-        plt.show()
+    show_or_save(fig, args.save, args.csv)
 
 
 if __name__ == "__main__":

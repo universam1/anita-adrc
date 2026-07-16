@@ -13,3 +13,4 @@ src/secrets.h
 __pycache__/
 *.pyc
 .venv/
+venv/

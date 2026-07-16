@@ -33,6 +33,9 @@ def capture(port: str, baud: int, log: str) -> None:
 
 
 def plot(path: str, save: str | None) -> None:
+    import pathlib
+
+    import matplotlib
     import matplotlib.pyplot as plt
     import pandas as pd
 
@@ -58,6 +61,12 @@ def plot(path: str, save: str | None) -> None:
 
     fig.suptitle(path)
     fig.tight_layout()
+    if not save and matplotlib.get_backend().lower() in (
+        "agg", "pdf", "ps", "svg", "template",
+    ):
+        save = str(pathlib.Path(path).with_suffix(".png"))
+        print("no interactive matplotlib backend available "
+              "(for live windows: pip install PyQt6)")
     if save:
         fig.savefig(save, dpi=130)
         print(f"wrote {save}")
