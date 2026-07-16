@@ -23,7 +23,8 @@ void SimHarness::run(float seconds,
             in.groupMv = ntc_.millivoltsFromCelsius(in.groupC);
             in.readingAgeS = 0.0f;
             in.dtS = ts;
-            const CoreOutputs out = core_.step(in);
+            CoreOutputs out = core_.step(in);
+            if (forceActive_ && out.fault == Fault::None) out.duty = forcedDuty_;
             mod_.setDuty(out.duty);
 
             snap_.tS = tS_;

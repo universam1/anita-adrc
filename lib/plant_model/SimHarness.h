@@ -33,7 +33,14 @@ public:
     // period with the latest snapshot.
     void run(float seconds, const std::function<void(const Snapshot&)>& onControlStep = {});
 
+    // Identification override, mirroring the firmware's `id duty/off`: the
+    // core keeps stepping (ESO keeps observing) but the modulator gets a
+    // fixed duty until releaseDuty().
+    void forceDuty(float d) { forceActive_ = true; forcedDuty_ = d; }
+    void releaseDuty() { forceActive_ = false; }
+
     const Snapshot& last() const { return snap_; }
+    float nowS() const { return tS_; }
 
 private:
     static constexpr float kTickS = 0.01f;  // one half-wave at 50 Hz
@@ -46,6 +53,8 @@ private:
     float tS_ = 0.0f;
     float sinceControlS_ = 1e9f;  // force a control step on the first tick
     bool ssrOn_ = false;
+    bool forceActive_ = false;
+    float forcedDuty_ = 0.0f;
 };
 
 }  // namespace anita

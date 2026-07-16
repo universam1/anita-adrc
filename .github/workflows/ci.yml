@@ -36,5 +36,10 @@ jobs:
             .pio/build/native/program --scenario "$s" --csv /dev/null
           done
 
+      - name: Round-trip capture->fit validation (sim truth recovered)
+        run: |
+          .pio/build/native/program --scenario ident --serial-format \
+            | python tools/fit_model.py - --expect-sim
+
       - name: Build ESP32-C3 firmware
         run: pio run -e esp32c3

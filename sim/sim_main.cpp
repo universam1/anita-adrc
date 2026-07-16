@@ -12,6 +12,12 @@
 //   espresso         from steady state: 30 ml over 30 s
 //   maxdraw          from steady state: 250 ml over 30 s (full boiler volume)
 //   flush            from mid warm-up: 60 ml over 15 s
+//   ident            identification recipe (steady -> off -> 40% step -> off),
+//                    matches tools/tune_capture.py --recipe id
+//
+// --serial-format emits the EXACT device serial stream (CSV columns +
+// #PARAMS/#AMBIENT/#EVT lines) on stdout so tools/fit_model.py can be
+// validated end-to-end without hardware (wired into CI).
 
 #include <cstdio>
 #include <cstring>
@@ -49,6 +55,64 @@ struct Overrides {
     float wc = -1, wo = -1, b0 = -1, pred = -1, kboost = -1;
 };
 
+// --serial-format: mimic the firmware's serial stream on stdout.
+bool gSerialFormat = false;
+
+std::function<void(const SimHarness::Snapshot&)> serialLogger(ControllerCore& core) {
+    std::printf(
+        "millis,boiler,group,set,boiler_set,duty,z1,z2,boost,offset,state,draw\n");
+    return [&core](const SimHarness::Snapshot& s) {
+        std::printf("%lu,%.2f,%.2f,%.1f,%.2f,%.3f,%.2f,%.4f,%.2f,%.2f,%s,%d\n",
+                    static_cast<unsigned long>(s.tS * 1000.0f), s.boilerSensC,
+                    s.groupSensC, core.setpoint(), s.out.boilerSetC, s.out.duty,
+                    s.out.z1, s.out.z2, s.out.boostC, s.out.offsetSsC,
+                    stateName(s.out.state), s.out.drawActive ? 1 : 0);
+    };
+}
+
+int runIdent(SimHarness& h) {
+    const auto& mp = h.model().params();
+    auto log = serialLogger(h.core());
+    const auto evt = [&](const char* fmt, double a = 0, double b = 0) {
+        std::printf(fmt, static_cast<unsigned long>(h.nowS() * 1000.0f), a, b);
+    };
+
+    std::printf("#AMBIENT %.1f\n", static_cast<double>(mp.tAmbC));
+    const auto& ap = h.core().config().adrc;
+    std::printf("#PARAMS 0 b0=%.3f wc=%.4f wo=%.4f pred=%.1f kboost=%.2f "
+                "cap=1.00 offset=%.2f setpoint=%.1f\n",
+                static_cast<double>(ap.b0), static_cast<double>(ap.wc),
+                static_cast<double>(ap.wo), static_cast<double>(ap.predS),
+                static_cast<double>(h.core().groupComp().params().kBoost),
+                static_cast<double>(h.core().groupComp().offsetSs()),
+                static_cast<double>(h.core().setpoint()));
+
+    h.run(900.0f, log);  // settle in regulation: gives duty_ss + T_ss
+
+    evt("#EVT %lu id_off t=%.0f\n", 420.0);
+    h.forceDuty(0.0f);
+    h.run(420.0f, log);
+    evt("#EVT %lu id_end\n");
+
+    evt("#EVT %lu id_duty d=%.3f t=%.0f\n", 0.4, 120.0);
+    h.forceDuty(0.4f);
+    h.run(120.0f, log);
+    evt("#EVT %lu id_end\n");
+
+    evt("#EVT %lu id_off t=%.0f\n", 180.0);
+    h.forceDuty(0.0f);
+    h.run(180.0f, log);
+    evt("#EVT %lu id_end\n");
+
+    h.releaseDuty();
+    h.run(300.0f, log);  // back to regulation
+
+    const auto& s = h.last();
+    std::fprintf(stderr, "[ident] t=%.0fs boiler=%.2fC fault=%s\n", s.tS,
+                 s.boilerSensC, faultName(s.out.fault));
+    return s.out.fault == Fault::None ? 0 : 1;
+}
+
 int runScenario(const std::string& name, const Overrides& ov) {
     CoreConfig cfg;
     if (ov.wc > 0) cfg.adrc.wc = ov.wc;
@@ -59,8 +123,9 @@ int runScenario(const std::string& name, const Overrides& ov) {
     if (name == "cold_start_noboost") cfg.groupComp.kBoost = 0.0f;
 
     const bool fromSteady =
-        (name == "espresso" || name == "maxdraw");
+        (name == "espresso" || name == "maxdraw" || name == "ident");
     SimHarness h(cfg, BoilerModelParams{}, fromSteady ? 90.0f : 20.0f);
+    if (name == "ident") return runIdent(h);
     auto log = logger(h.core());
 
     if (name == "cold_start" || name == "cold_start_noboost") {
@@ -113,6 +178,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--b0") && i + 1 < argc) ov.b0 = std::stof(argv[++i]);
         else if (!std::strcmp(argv[i], "--pred") && i + 1 < argc) ov.pred = std::stof(argv[++i]);
         else if (!std::strcmp(argv[i], "--kboost") && i + 1 < argc) ov.kboost = std::stof(argv[++i]);
+        else if (!std::strcmp(argv[i], "--serial-format")) gSerialFormat = true;
         else {
             std::fprintf(stderr,
                          "usage: %s [--scenario name] [--csv out.csv] "

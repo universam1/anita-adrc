@@ -104,6 +104,9 @@ warm-up transient in `z2` would otherwise false-trigger.
 
 ## Tuning procedure (sim first, then hardware)
 
+> Hardware tuning has its own end-to-end playbook — capture, model fitting
+> and the `/retune` update loop: [tuning-hardware.md](tuning-hardware.md).
+
 1. Fix `b0 = 0.55`. Step the setpoint 90→93 °C from steady state. Raise `ωc`
    until the first overshoot appears, back off 30 %.
 2. Raise `ωo` (keep 3–5×ωc) until sensor noise visibly appears in the duty;

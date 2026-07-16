@@ -69,6 +69,12 @@ CoreOutputs ControllerCore::step(const CoreInputs& in) {
     sin.readingAgeS = in.readingAgeS;
     sin.dtS = in.dtS;
 
+    // Safety must judge the duty that was actually DELIVERED last interval
+    // (set via setAppliedDuty) — not the controller's intent. During an
+    // identification override or a duty cap the two differ, and NoRise would
+    // otherwise false-trip while the heater is deliberately held off.
+    const float deliveredDuty = adrc_.appliedDuty();
+
     // ADRC runs from the moment BOOT completes; far from setpoint it simply
     // saturates at full duty (the ESO keeps converging => bumpless handover).
     float duty = adrc_.update(boilerSet, in.boilerC);
@@ -85,7 +91,7 @@ CoreOutputs ControllerCore::step(const CoreInputs& in) {
         adrc_.setAppliedDuty(duty);  // keep the ESO honest about the override
     }
 
-    sin.duty = duty;
+    sin.duty = deliveredDuty;
     const Fault fault = safety_.step(sin);
     if (fault != Fault::None) {
         state_ = State::Fault;

@@ -14,3 +14,6 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Tuning captures (keep local; large)
+captures/*.log

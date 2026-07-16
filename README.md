@@ -71,8 +71,22 @@ python tools/plot_serial.py --port /dev/ttyACM0 --log run.csv
 
 The simulator CLI takes tuning overrides (`--wc --wo --b0 --pred --kboost`)
 and scenarios `cold_start`, `cold_start_noboost`, `espresso`, `maxdraw`,
-`flush`, `full` — see [docs/adrc.md](docs/adrc.md) for the math and the
-tuning procedure.
+`flush`, `full`, `ident` — see [docs/adrc.md](docs/adrc.md) for the math and
+the tuning procedure.
+
+## Hardware tuning loop
+
+Real-machine tuning runs entirely over the USB cable
+([docs/tuning-hardware.md](docs/tuning-hardware.md)): a serial console in the
+firmware (`id duty/off`, `mark`, `set`, `get`) drives guarded identification
+experiments while `tools/tune_capture.py` records the stream with scenario
+markers; `tools/fit_model.py` extracts the machine's real constants (heat
+capacity, losses, sensor lag, group coupling) from the capture; the `/retune`
+skill applies them to the model and controller defaults, re-verifies the
+regression contract in sim, and rebuilds. The capture→fit pipeline is
+validated in CI against the simulator's known truth
+(`--scenario ident --serial-format`), so the tooling is proven before it
+touches the machine.
 
 ## Repository layout
 
@@ -101,12 +115,13 @@ worst-case draw saturates the element in ~11 s and recovers without windup.
 
 - [x] Controller core, simulator, regression tests (CI)
 - [x] Firmware builds for ESP32-C3 (tasked architecture, HA discovery)
+- [x] Serial tuning console + capture/fit/retune loop (CI-validated round trip)
 - [ ] Bench bring-up: NTC calibration, SSR pulse patterns on LED, flash-cycle
       off-state check
 - [ ] Machine integration behind the factory safety thermostat (duty-capped
-      first heat-up)
-- [ ] Hardware tuning: refit model constants, one-point NTC calibration,
-      k_boost against real draws — log in docs/tuning-log.md
+      first heat-up via `set cap 0.3`)
+- [ ] Hardware tuning per docs/tuning-hardware.md: capture → fit → /retune →
+      flash — log in docs/tuning-log.md
 
 ## License
 

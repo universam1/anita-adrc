@@ -37,8 +37,10 @@ public:
     float update(float setpoint, float y);
 
     // Report the duty really delivered by the modulator since the last
-    // update (quantization means it can differ slightly from the command).
+    // update (quantization, identification overrides and duty caps make it
+    // differ from the command).
     void setAppliedDuty(float u) { uApplied_ = clampU(u); }
+    float appliedDuty() const { return uApplied_; }
 
     float z1() const { return z1_; }
     float z2() const { return z2_; }
@@ -46,6 +48,7 @@ public:
     // Live tuning (MQTT / serial).
     void setB0(float b0) { p_.b0 = b0; }
     void setBandwidths(float wc, float wo) { p_.wc = wc; p_.wo = wo; }
+    void setPredS(float s) { p_.predS = s; }
     const AdrcParams& params() const { return p_; }
 
 private:

@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+"""Fit boiler-model constants from a tuning capture (device serial stream or
+`sim --scenario ident --serial-format` output). Stdlib only — runs in CI.
+
+The capture must contain a steady regulation window followed by the
+identification recipe (see docs/tuning-hardware.md):
+
+    steady -> id off 420 -> id duty 0.4 120 -> id off 180
+
+Fits (energy-balance based, no optimizer):
+    k_lumped   total loss [W/K]         P*duty_ss / (T_ss - T_amb)
+    C_total    heat capacity [J/K]      from segment slopes: P*d = C*dT/dt + k*(T-Ta)
+    b0         ADRC gain [K/s]          P / C_total, cross-checked vs -z2_ss/duty_ss
+    lag        effective sensor lag [s] time to half of max slope after the duty step
+    k_bg, k_ambG  group couplings       least squares on dTg/dt = a*(Tb-Tg) + b*(Tg-Ta)
+                                        (Cg assumed, --cg to override)
+
+Usage:
+    python tools/fit_model.py captures/2026-.. .log
+    .pio/build/native/program --scenario ident --serial-format | \\
+        python tools/fit_model.py - --expect-sim
+"""
+
+import argparse
+import json
+import math
+import sys
+
+P_HEATER = 1000.0  # W
+
+# Current committed defaults (BoilerModelParams / AdrcParams) for comparison.
+DEFAULTS = {
+    "C_total": 760.0 + 1046.0,
+    "k_lumped": 1.2 + 0.5,  # kAmbB + kAmbG (lumped view)
+    "b0": 0.55,
+    "lag": 8.0 + 2.0,
+    "k_bg": 6.0,
+    "k_ambG": 0.5,
+}
+
+# Tolerance windows for --expect-sim (round-trip validation against the
+# simulator's known truth; generous because the fits are deliberately simple).
+EXPECT_SIM = {
+    "C_total": (1300.0, 2400.0),   # truth 1806
+    "k_lumped": (1.1, 2.3),        # truth ~1.6 at 99 C
+    "b0": (0.40, 0.75),            # truth 0.55
+    "lag": (3.0, 30.0),            # truth ~10
+    "k_bg": (3.5, 9.0),            # truth 6
+    "k_ambG": (0.25, 1.0),         # truth 0.5
+}
+
+
+def parse_capture(fp):
+    rows, events, meta = [], [], {"ambient": None, "params": {}}
+    header = None
+    for raw in fp:
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            parts = line.split()
+            tag = parts[0]
+            if tag == "#AMBIENT" and len(parts) > 1:
+                meta["ambient"] = float(parts[1])
+            elif tag == "#EVT" and len(parts) > 2:
+                # args live in their own dict — the duration arg is also
+                # named "t" and must not clobber the event timestamp
+                ev = {"t": float(parts[1]) / 1000.0, "name": parts[2], "args": {}}
+                for kv in parts[3:]:
+                    if "=" in kv:
+                        k, v = kv.split("=", 1)
+                        ev["args"][k] = float(v)
+                events.append(ev)
+            elif tag == "#PARAMS":
+                for kv in parts[2:]:
+                    if "=" in kv:
+                        k, v = kv.split("=", 1)
+                        meta["params"][k] = float(v)
+            continue
+        if line.startswith("millis"):
+            header = line.split(",")
+            continue
+        if header is None or not line[0].isdigit():
+            continue
+        vals = line.split(",")
+        if len(vals) != len(header):
+            continue
+        row = {}
+        for k, v in zip(header, vals):
+            if k in ("state",):
+                row[k] = v
+            elif k in ("draw",):
+                row[k] = int(v)
+            else:
+                row[k] = float(v)
+        row["t"] = row["millis"] / 1000.0
+        rows.append(row)
+    return rows, events, meta
+
+
+def window(rows, t0, t1):
+    return [r for r in rows if t0 <= r["t"] <= t1]
+
+
+def mean(xs):
+    return sum(xs) / len(xs) if xs else float("nan")
+
+
+def linfit(ts, ys):
+    """Least-squares slope and intercept of ys over ts."""
+    n = len(ts)
+    if n < 3:
+        return float("nan"), float("nan")
+    mt, my = mean(ts), mean(ys)
+    sxx = sum((t - mt) ** 2 for t in ts)
+    sxy = sum((t - mt) * (y - my) for t, y in zip(ts, ys))
+    slope = sxy / sxx if sxx > 0 else float("nan")
+    return slope, my - slope * mt
+
+
+def segment_bounds(events, name, index=0):
+    """Return (t_start, t_end, ev) of the index-th EVT matching `name`."""
+    found = 0
+    for i, ev in enumerate(events):
+        if ev["name"] != name:
+            continue
+        if found == index:
+            t_end = None
+            for later in events[i + 1:]:
+                if later["name"] in ("id_end", "id_stop"):
+                    t_end = later["t"]
+                    break
+            return ev["t"], t_end, ev
+        found += 1
+    return None, None, None
+
+
+def fit(rows, events, meta, cg):
+    if not rows:
+        raise SystemExit("no CSV rows found in capture")
+    t_amb = meta["ambient"]
+    if t_amb is None:
+        raise SystemExit("no #AMBIENT line in capture (tune_capture.py writes it)")
+    if not events:
+        raise SystemExit("no #EVT lines — run the id recipe (tune_capture.py --recipe id)")
+
+    out = {}
+
+    # --- steady window: 120 s of regulation right before the first EVT
+    t_first = events[0]["t"]
+    steady = [r for r in window(rows, t_first - 120.0, t_first - 1.0)
+              if r["state"] == "reg" and r["draw"] == 0]
+    if len(steady) < 20:
+        raise SystemExit("no steady regulation window before the first #EVT")
+    duty_ss = mean([r["duty"] for r in steady])
+    t_ss = mean([r["boiler"] for r in steady])
+    tg_ss = mean([r["group"] for r in steady])
+    z2_ss = mean([r["z2"] for r in steady])
+    out["duty_ss"] = duty_ss
+    out["T_ss"] = t_ss
+    out["k_lumped"] = P_HEATER * duty_ss / (t_ss - t_amb)
+
+    # --- cooling segment (first id_off): C from energy balance at zero power
+    t0, t1, _ = segment_bounds(events, "id_off", 0)
+    if t0 is None:
+        raise SystemExit("no id_off segment in capture")
+    w = window(rows, t0 + 30.0, min(t1 or t0 + 400.0, t0 + 300.0))
+    slope_cool, _ = linfit([r["t"] for r in w], [r["boiler"] for r in w])
+    t_mid = mean([r["boiler"] for r in w])
+    c_cool = -out["k_lumped"] * (t_mid - t_amb) / slope_cool
+    out["C_from_cooling"] = c_cool
+
+    # --- duty step segment: C from energy balance at known power
+    t0, t1, ev = segment_bounds(events, "id_duty", 0)
+    if t0 is None:
+        raise SystemExit("no id_duty segment in capture")
+    d = ev["args"].get("d", float("nan"))
+    w = window(rows, t0 + 30.0, t1 or t0 + 120.0)
+    slope_step, _ = linfit([r["t"] for r in w], [r["boiler"] for r in w])
+    t_mid = mean([r["boiler"] for r in w])
+    c_step = (P_HEATER * d - out["k_lumped"] * (t_mid - t_amb)) / slope_step
+    out["C_from_step"] = c_step
+
+    out["C_total"] = mean([c for c in (c_cool, c_step) if c > 0])
+    out["b0"] = P_HEATER / out["C_total"]
+    out["b0_from_z2"] = -z2_ss / duty_ss if duty_ss > 0.01 else float("nan")
+
+    # --- sensor lag: time to half of max slope after the duty step
+    seg = window(rows, t0, (t1 or t0 + 120.0))
+    slopes = []
+    for i in range(1, len(seg) - 1):
+        dt = seg[i + 1]["t"] - seg[i - 1]["t"]
+        if dt > 0:
+            slopes.append(((seg[i + 1]["boiler"] - seg[i - 1]["boiler"]) / dt,
+                           seg[i]["t"]))
+    if slopes:
+        smax = max(s for s, _ in slopes)
+        lag = next((t - t0 for s, t in slopes if s >= 0.5 * smax), float("nan"))
+        out["lag"] = lag
+
+    # --- group couplings: LS on dTg/dt = a*(Tb-Tg) + b*(Tg-Ta), Cg assumed.
+    # Resample to 10 s buckets to knock down noise and the group NTC lag.
+    bucket, xs1, xs2, ys = {}, [], [], []
+    for r in rows:
+        if r["draw"]:
+            continue
+        bucket.setdefault(int(r["t"] // 10), []).append(r)
+    keys = sorted(bucket.keys())
+    series = [(k * 10.0 + 5.0,
+               mean([r["boiler"] for r in bucket[k]]),
+               mean([r["group"] for r in bucket[k]])) for k in keys]
+    for i in range(1, len(series) - 1):
+        t_prev, _, g_prev = series[i - 1]
+        t_next, _, g_next = series[i + 1]
+        _, b_i, g_i = series[i]
+        dgdt = (g_next - g_prev) / (t_next - t_prev)
+        xs1.append(b_i - g_i)
+        xs2.append(g_i - t_amb)
+        ys.append(dgdt)
+    # normal equations for y = a*x1 + b*x2
+    s11 = sum(x * x for x in xs1)
+    s22 = sum(x * x for x in xs2)
+    s12 = sum(x1 * x2 for x1, x2 in zip(xs1, xs2))
+    sy1 = sum(y * x for y, x in zip(ys, xs1))
+    sy2 = sum(y * x for y, x in zip(ys, xs2))
+    det = s11 * s22 - s12 * s12
+    if abs(det) > 1e-12:
+        a = (sy1 * s22 - sy2 * s12) / det
+        b = (sy2 * s11 - sy1 * s12) / det
+        out["k_bg"] = a * cg
+        out["k_ambG"] = -b * cg
+    out["group_offset_ss"] = t_ss - tg_ss
+    return out
+
+
+def report(out, meta):
+    print("== fit_model report ==")
+    if meta["params"]:
+        print("device params:", " ".join(f"{k}={v:g}" for k, v in meta["params"].items()))
+    print(f"steady: duty={out['duty_ss']:.3f} T={out['T_ss']:.1f}C "
+          f"group offset={out['group_offset_ss']:.1f}C")
+    print()
+    print(f"{'quantity':<12} {'fitted':>10} {'current':>10}   note")
+    rows = [
+        ("k_lumped", out.get("k_lumped"), DEFAULTS["k_lumped"], "W/K total loss"),
+        ("C_total", out.get("C_total"), DEFAULTS["C_total"],
+         f"J/K (cooling {out.get('C_from_cooling', float('nan')):.0f} / "
+         f"step {out.get('C_from_step', float('nan')):.0f})"),
+        ("b0", out.get("b0"), DEFAULTS["b0"],
+         f"K/s (z2 cross-check {out.get('b0_from_z2', float('nan')):.2f})"),
+        ("lag", out.get("lag"), DEFAULTS["lag"], "s effective sensor lag"),
+        ("k_bg", out.get("k_bg"), DEFAULTS["k_bg"], "W/K boiler->group (Cg assumed)"),
+        ("k_ambG", out.get("k_ambG"), DEFAULTS["k_ambG"], "W/K group->ambient"),
+    ]
+    for name, fitted, cur, note in rows:
+        f = "n/a" if fitted is None or math.isnan(fitted) else f"{fitted:10.2f}"
+        print(f"{name:<12} {f:>10} {cur:>10.2f}   {note}")
+    print()
+    print("suggested: BoilerModelParams.kAmbB = k_lumped - k_ambG;"
+          " cWater+cBrass = C_total; AdrcParams.b0 = b0;"
+          " wc <= 1/(2*lag)")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("capture", help="capture file, or - for stdin")
+    ap.add_argument("--cg", type=float, default=500.0,
+                    help="assumed group heat capacity J/K (default 500)")
+    ap.add_argument("--json", action="store_true", help="machine-readable output")
+    ap.add_argument("--expect-sim", action="store_true",
+                    help="assert fits recover the simulator's known constants")
+    args = ap.parse_args()
+
+    fp = sys.stdin if args.capture == "-" else open(args.capture)
+    rows, events, meta = parse_capture(fp)
+    out = fit(rows, events, meta, args.cg)
+
+    if args.json:
+        print(json.dumps(out, indent=2))
+    else:
+        report(out, meta)
+
+    if args.expect_sim:
+        failures = []
+        for key, (lo, hi) in EXPECT_SIM.items():
+            v = out.get(key)
+            if v is None or math.isnan(v) or not (lo <= v <= hi):
+                failures.append(f"{key}={v} not in [{lo}, {hi}]")
+        if failures:
+            print("EXPECT-SIM FAILURES:", *failures, sep="\n  ", file=sys.stderr)
+            sys.exit(1)
+        print("expect-sim: all fits within tolerance", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
