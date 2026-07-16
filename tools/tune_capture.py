@@ -41,17 +41,25 @@ import sys
 import time
 
 # The identification recipe: (wait_seconds_before, command). Durations must
-# stay inside the safety envelope — 40% duty from a warm-but-cooling boiler
-# cannot reach the 105 C trip. Matches the sim's `ident` scenario, which is
-# what fit_model.py is validated against in CI.
+# stay inside the safety envelope — the full-power lag pulse fires from the
+# coolest point (~78 C after 7 min of cooling) and the 40% step from ~77 C,
+# so neither can approach the 105 C trip. Matches the sim's `ident` scenario,
+# which is what fit_model.py is validated against in CI.
+#
+# Segment roles for fit_model.py:
+#   id off 420        cooling         -> C_from_cooling, and the cool-down
+#   id duty 1.0 30    sharp lag edge  -> dead time L + sensor tau
+#   id duty 0.4 120   moderate step   -> C_from_step
 RECIPES = {
     "id": [
         (5, "get"),
-        (120, "id off 420"),     # settle window first, then cool
-        (425, "id duty 0.4 120"),
+        (120, "id off 420"),      # settle window first, then cool
+        (425, "id duty 1.0 30"),  # lag-measurement pulse (exactly timestamped)
+        (35, "id off 180"),
+        (185, "id duty 0.4 120"),
         (125, "id off 180"),
         (185, "get"),
-        (300, None),             # tail: back in regulation
+        (300, None),              # tail: back in regulation
     ],
 }
 
@@ -91,7 +99,10 @@ class ReplaySource:
         line = self.lines[self.idx]
         self.idx += 1
         if line and line[0].isdigit():
-            self.last_millis = int(line.split(",", 1)[0])
+            try:
+                self.last_millis = int(line.split(",", 1)[0])
+            except ValueError:
+                pass  # digit-leading but not a CSV row; pass through as-is
         return line
 
     @property

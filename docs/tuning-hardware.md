@@ -94,9 +94,12 @@ From a fully warmed, idle machine:
 python tools/tune_capture.py --port /dev/ttyACM0 --name ident --recipe id
 ```
 
-The recipe waits 120 s for a clean steady window, cools 7 min, steps to 40 %
-for 2 min, cools again — all inside the safety envelope. This is the same
-sequence the CI round-trip validates against the simulator.
+The recipe waits 120 s for a clean steady window, cools 7 min, fires a **30 s
+full-power lag pulse** from the coolest point (the sharp, exactly-timestamped
+edge from which dead time + sensor rise constant are fitted), settles, steps
+to 40 % for 2 min (heat-capacity fit), cools again — all inside the safety
+envelope. This is the same sequence the CI round-trip validates against the
+simulator.
 
 ### 5. Fit and update the model
 
@@ -137,7 +140,7 @@ Every accepted change: bake into `config.h`/`CoreConfig` defaults, run
 |---|---|---|
 | `C_total` | `cWater+cBrass`, `b0 = P/C` | cooling + step estimates should agree within ~20 % |
 | `k_lumped` | `kAmbB` (minus `k_ambG`) | sets the idle duty the sim predicts |
-| `lag` | bound `wc ≲ 1/(2·lag)`, `predS ≈ 2·lag` | clamp quality dominates this |
+| `lag` (dead + τ) | bound `wc ≲ 1/(2·lag)`, `predS ≈ 4·lag` | composite reaction lag of the whole chain (measured from the full-power pulse); clamp quality dominates it. The model's sensor stage is tuned until the sim reproduces this number |
 | `k_bg`, `k_ambG` | group coupling in the sim | assumes `Cg` (500 J/K default, `--cg`) |
 | `group_offset_ss` | sanity check on learned `offset_ss` | NVS value should converge here |
 

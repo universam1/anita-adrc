@@ -29,11 +29,16 @@ import sys
 P_HEATER = 1000.0  # W
 
 # Current committed defaults (BoilerModelParams / AdrcParams) for comparison.
+# "lag" is the COMPOSITE reaction lag of the whole chain (heater -> brass ->
+# sensor -> filtering): the controller-relevant number for the wc bound. The
+# model's sensor stage alone is tauNtc=8s + delay=2s, but the brass initially
+# heats fast (P/C_brass) before energy couples into the water, so the chain's
+# reaction lag is ~4-5s in the simulator.
 DEFAULTS = {
     "C_total": 760.0 + 1046.0,
     "k_lumped": 1.2 + 0.5,  # kAmbB + kAmbG (lumped view)
     "b0": 0.55,
-    "lag": 8.0 + 2.0,
+    "lag": 4.0,             # composite reaction lag of the current model
     "k_bg": 6.0,
     "k_ambG": 0.5,
 }
@@ -41,12 +46,15 @@ DEFAULTS = {
 # Tolerance windows for --expect-sim (round-trip validation against the
 # simulator's known truth; generous because the fits are deliberately simple).
 EXPECT_SIM = {
-    "C_total": (1300.0, 2400.0),   # truth 1806
-    "k_lumped": (1.1, 2.3),        # truth ~1.6 at 99 C
-    "b0": (0.40, 0.75),            # truth 0.55
-    "lag": (3.0, 30.0),            # truth ~10
-    "k_bg": (3.5, 9.0),            # truth 6
-    "k_ambG": (0.25, 1.0),         # truth 0.5
+    "C_total": (1300.0, 2400.0),        # truth 1806
+    "k_lumped": (1.1, 2.3),             # truth ~1.6 at 99 C
+    "b0": (0.40, 0.75),                 # truth 0.55
+    "lag": (2.5, 6.5),                  # composite reaction lag, sim ~4.0
+    "lag_dead_time_s": (0.0, 2.5),      # sim ~0.5 (2 s transport, partly
+                                        # masked by bucketed slopes)
+    "lag_tau_s": (1.5, 6.0),            # sim ~3.5
+    "k_bg": (3.5, 9.0),                 # truth 6
+    "k_ambG": (0.25, 1.0),              # truth 0.5
 }
 
 
@@ -138,6 +146,87 @@ def segment_bounds(events, name, index=0):
     return None, None, None
 
 
+def duty_segments_by_role(events):
+    """The id recipe fires two duty steps with different jobs: the full-power
+    pulse (d >= 0.9) is the sharp edge for the lag fit, the moderate one
+    (d < 0.9) the energy balance for C. Old single-step captures fall back to
+    using the one segment for both."""
+    lag_seg, cstep_seg = None, None
+    idx = 0
+    while True:
+        t0, t1, ev = segment_bounds(events, "id_duty", idx)
+        if t0 is None:
+            break
+        d = ev["args"].get("d", float("nan"))
+        if d >= 0.9 and lag_seg is None:
+            lag_seg = (t0, t1, d)
+        elif d < 0.9 and cstep_seg is None:
+            cstep_seg = (t0, t1, d)
+        idx += 1
+    if cstep_seg is None:
+        cstep_seg = lag_seg
+    if lag_seg is None:
+        lag_seg = cstep_seg
+    return lag_seg, cstep_seg
+
+
+def fit_lag(rows, t0, t1):
+    """Dead time L and sensor time constant tau from the slope transition
+    after an exactly-timestamped duty step at t0:
+
+        s(t) = s_pre                                   t <= t0 + L
+        s(t) = s_pre + ds * (1 - exp(-(t-t0-L)/tau))   t >  t0 + L
+
+    Slopes come from central differences on 2 s buckets over [t0-30, t1];
+    (L, tau) by grid search with (s_pre, ds) solved linearly at each node."""
+    w = window(rows, t0 - 30.0, t1)
+    bucket = {}
+    for r in w:
+        bucket.setdefault(int(r["t"] // 2), []).append(r["boiler"])
+    keys = sorted(bucket.keys())
+    pts = [(k * 2.0 + 1.0, mean(bucket[k])) for k in keys]
+    slopes = []
+    for i in range(1, len(pts) - 1):
+        dt = pts[i + 1][0] - pts[i - 1][0]
+        if dt > 0:
+            slopes.append((pts[i][0], (pts[i + 1][1] - pts[i - 1][1]) / dt))
+    if len(slopes) < 8:
+        return float("nan"), float("nan")
+
+    best = (float("inf"), float("nan"), float("nan"))
+    lval = 0.0
+    while lval <= 10.0:
+        tau = 1.0
+        while tau <= 40.0:
+            # linear LS for (s_pre, ds) given basis f(t)
+            s11 = s12 = s22 = b1 = b2 = 0.0
+            for t, s in slopes:
+                f = 0.0
+                if t > t0 + lval:
+                    f = 1.0 - math.exp(-(t - t0 - lval) / tau)
+                s11 += 1.0
+                s12 += f
+                s22 += f * f
+                b1 += s
+                b2 += s * f
+            det = s11 * s22 - s12 * s12
+            if abs(det) > 1e-9:
+                s_pre = (b1 * s22 - b2 * s12) / det
+                ds = (b2 * s11 - b1 * s12) / det
+                sse = 0.0
+                for t, s in slopes:
+                    f = 0.0
+                    if t > t0 + lval:
+                        f = 1.0 - math.exp(-(t - t0 - lval) / tau)
+                    e = s - (s_pre + ds * f)
+                    sse += e * e
+                if ds > 0 and sse < best[0]:
+                    best = (sse, lval, tau)
+            tau += 0.25
+        lval += 0.25
+    return best[1], best[2]
+
+
 def fit(rows, events, meta, cg):
     if not rows:
         raise SystemExit("no CSV rows found in capture")
@@ -173,11 +262,12 @@ def fit(rows, events, meta, cg):
     c_cool = -out["k_lumped"] * (t_mid - t_amb) / slope_cool
     out["C_from_cooling"] = c_cool
 
-    # --- duty step segment: C from energy balance at known power
-    t0, t1, ev = segment_bounds(events, "id_duty", 0)
-    if t0 is None:
+    # --- duty step segments by role (lag pulse vs C step)
+    lag_seg, cstep_seg = duty_segments_by_role(events)
+    if cstep_seg is None:
         raise SystemExit("no id_duty segment in capture")
-    d = ev["args"].get("d", float("nan"))
+
+    t0, t1, d = cstep_seg
     w = window(rows, t0 + 30.0, t1 or t0 + 120.0)
     slope_step, _ = linfit([r["t"] for r in w], [r["boiler"] for r in w])
     t_mid = mean([r["boiler"] for r in w])
@@ -188,18 +278,13 @@ def fit(rows, events, meta, cg):
     out["b0"] = P_HEATER / out["C_total"]
     out["b0_from_z2"] = -z2_ss / duty_ss if duty_ss > 0.01 else float("nan")
 
-    # --- sensor lag: time to half of max slope after the duty step
-    seg = window(rows, t0, (t1 or t0 + 120.0))
-    slopes = []
-    for i in range(1, len(seg) - 1):
-        dt = seg[i + 1]["t"] - seg[i - 1]["t"]
-        if dt > 0:
-            slopes.append(((seg[i + 1]["boiler"] - seg[i - 1]["boiler"]) / dt,
-                           seg[i]["t"]))
-    if slopes:
-        smax = max(s for s, _ in slopes)
-        lag = next((t - t0 for s, t in slopes if s >= 0.5 * smax), float("nan"))
-        out["lag"] = lag
+    # --- sensor lag: dead time + tau fitted to the slope transition after
+    # the full-power pulse (the #EVT timestamp of the cause is exact)
+    lt0, lt1, _ = lag_seg
+    lag_l, lag_tau = fit_lag(rows, lt0, lt1 or lt0 + 30.0)
+    out["lag_dead_time_s"] = lag_l
+    out["lag_tau_s"] = lag_tau
+    out["lag"] = lag_l + lag_tau
 
     # --- group couplings: LS on dTg/dt = a*(Tb-Tg) + b*(Tg-Ta), Cg assumed.
     # Resample to 10 s buckets to knock down noise and the group NTC lag.
@@ -376,7 +461,9 @@ def report(out, meta):
          f"step {out.get('C_from_step', float('nan')):.0f})"),
         ("b0", out.get("b0"), DEFAULTS["b0"],
          f"K/s (z2 cross-check {out.get('b0_from_z2', float('nan')):.2f})"),
-        ("lag", out.get("lag"), DEFAULTS["lag"], "s effective sensor lag"),
+        ("lag", out.get("lag"), DEFAULTS["lag"],
+         f"s reaction lag of the chain (dead {out.get('lag_dead_time_s', float('nan')):.1f}"
+         f" + tau {out.get('lag_tau_s', float('nan')):.1f})"),
         ("k_bg", out.get("k_bg"), DEFAULTS["k_bg"], "W/K boiler->group (Cg assumed)"),
         ("k_ambG", out.get("k_ambG"), DEFAULTS["k_ambG"], "W/K group->ambient"),
     ]
@@ -386,7 +473,8 @@ def report(out, meta):
     print()
     print("suggested: BoilerModelParams.kAmbB = k_lumped - k_ambG;"
           " cWater+cBrass = C_total; AdrcParams.b0 = b0;"
-          " wc <= 1/(2*lag)")
+          " wc <= 1/(2*lag); predS ~= 4*lag;"
+          " tune tauNtcBoilerS until the sim round-trip reproduces lag")
 
 
 def main():

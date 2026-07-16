@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <cmath>
 #include <vector>
 
 #include "SsrModulator.h"
@@ -90,6 +91,42 @@ static void test_paired_full_waves() {
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.2f, static_cast<float>(fired) / v.size());
 }
 
+static void test_charge_conserved_across_async_duty_changes() {
+    // The ADRC updates the duty faster than the PFM completes a pulse
+    // interval at low duty. The accumulator must carry charge across those
+    // asynchronous command changes: total fired half-waves == integral of
+    // the commanded duty, +-1 quantum, with no loss at command boundaries.
+    SsrModulator m;
+    const float duties[] = {0.13f, 0.02f, 0.31f, 0.05f, 0.5f, 0.01f, 0.27f};
+    float commandedIntegral = 0.0f;
+    int fired = 0;
+    int di = 0;
+    for (int tick = 0; tick < 7000; ++tick) {
+        if (tick % 7 == 0) {  // change command mid-"cycle", deliberately
+            m.setDuty(duties[di % 7]);
+            ++di;
+        }
+        commandedIntegral += m.duty();
+        fired += m.tick() ? 1 : 0;
+    }
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, commandedIntegral,
+                             static_cast<float>(fired));
+}
+
+static void test_per_window_error_bounded() {
+    // At 2% duty one pulse fires per 50-tick control window at most: the
+    // delivered-vs-commanded error within ANY single window must stay within
+    // one half-wave (the quantization bound documented in docs/adrc.md).
+    SsrModulator m;
+    m.setDuty(0.02f);
+    for (int window = 0; window < 200; ++window) {
+        int fired = 0;
+        for (int i = 0; i < 50; ++i) fired += m.tick() ? 1 : 0;
+        const float delivered = fired / 50.0f;
+        TEST_ASSERT_TRUE(std::fabs(delivered - 0.02f) <= 1.0f / 50.0f + 1e-6f);
+    }
+}
+
 static void test_duty_zero_kills_stored_charge() {
     SsrModulator m;
     m.setDuty(0.9f);
@@ -106,6 +143,8 @@ int main(int, char**) {
     RUN_TEST(test_long_run_accuracy);
     RUN_TEST(test_actual_duty_feedback);
     RUN_TEST(test_paired_full_waves);
+    RUN_TEST(test_charge_conserved_across_async_duty_changes);
+    RUN_TEST(test_per_window_error_bounded);
     RUN_TEST(test_duty_zero_kills_stored_charge);
     return UNITY_END();
 }

@@ -57,6 +57,42 @@ P law on `z1` overshoots. `y_pred` extrapolates the ESO's own rate estimate
 term adds **zero bias**; on a ramp it backs the duty off early. In the
 simulator, `predS = 20 s` cuts the approach overshoot from ~2.5 °C to <1 °C.
 
+## Multi-rate timing: why the 0.5 s ADRC and the variable-rate PFM don't fight
+
+A fair objection: the ADRC issues a new duty every 0.5 s, but the COT-PFM's
+pulse repetition interval *stretches* at low duty — ~77 ms at the 13 % idle
+duty, 0.5 s at 2 %, a full second at 1 %. So near idle the controller updates
+faster than the actuator completes one "PFM cycle", and within any single
+control window the delivered energy is quantized to whole half-waves
+(±1 half-wave = ±2 % duty per window). Isn't that a flaw?
+
+No — three mechanisms close the three ways it could bite:
+
+1. **Charge conservation.** `SsrModulator::setDuty()` never resets the
+   sigma-delta accumulator (except at duty 0, deliberately: off must mean off
+   *now*). Energy in flight is carried across asynchronous command changes,
+   so the delivered long-run duty tracks the time-varying command exactly and
+   quantization error is noise-shaped to high frequency — never a bias. Same
+   structure as a ΣΔ-DAC with an asynchronous signal update.
+   (`test_charge_conserved_across_async_duty_changes` pins this.)
+
+2. **The observer integrates reality, not intent.** Every control period the
+   delivered duty of the last window (`consumeActualDuty()`) is fed to the
+   ESO via `setAppliedDuty()`. The per-window quantization mismatch is
+   therefore accounted for exactly — the observer never believes the command
+   in the first place. (`test_applied_duty_feedback_used` pins this.)
+
+3. **Bandwidth separation ~50×.** Worst sustained pulse interval ≈ 1 s (at
+   1 % duty) acts like an actuator delay of ~0.5 s: at ωc = 0.04 rad/s that
+   is 0.02 rad ≈ **1.2° of phase** — negligible. Thermally, one half-wave is
+   10 J into ~760 J/K of brass = 13 mK, flattened further by the sensor lag.
+
+When it *would* become a flaw: pushing ωc toward ~1 rad/s (already excluded
+by the sensor-lag bound above), resetting the accumulator on command changes,
+or feeding the ESO the commanded instead of delivered duty. Sigma-delta
+"idle tones" (low-frequency limit cycles at unlucky rational duties) exist in
+theory; at these thermal masses they are sub-millikelvin.
+
 ## Default parameters (simulator-derived)
 
 | Parameter | Value | Note |
@@ -67,9 +103,24 @@ simulator, `predS = 20 s` cuts the approach overshoot from ~2.5 °C to <1 °C.
 | `Ts` | 0.5 s | ADRC period; SSR modulation is independent at 10 ms |
 | `predS` | 20 s | ≈ sensor lag + transport delay, ×2 |
 
-Sensor lag bounds the achievable bandwidth (`ωc ≲ 1/(2·L)` with L ≈ 10–20 s);
-pushing `ωc` past ~0.1 rad/s will oscillate on hardware no matter how good
-the simulation looks.
+Sensor lag bounds the achievable bandwidth (`ωc ≲ 1/(2·L)`); pushing `ωc`
+past ~0.1 rad/s will oscillate on hardware no matter how good the simulation
+looks.
+
+**Assumption status of the lag numbers.** The model's sensor stage
+(`tauNtcBoilerS = 8 s`, `delayBoilerS = 2 s`) is an engineering estimate for
+a shell-clamped NTC — chosen, not measured. What the controller actually
+feels is the **composite reaction lag** of the whole chain (element → brass →
+clamp/NTC → ADC filtering → sampling), and that is *measurable*: the ident
+recipe fires a 30 s full-power pulse whose start is exactly timestamped
+firmware-side (`#EVT id_duty`), and `fit_model.py` fits dead time + rise
+constant to the sensed-slope transition. Interestingly the composite is
+*faster* than the sensor stage (~4–5 s in the sim despite the 10 s stage),
+because brass initially heats at `P/C_brass` before energy couples into the
+water. The bound and the predictor use the composite: `ωc ≤ 1/(2·lag)`,
+`predS ≈ 4·lag` (the committed values satisfy this: predS 20 ≈ 4 × ~5 s).
+`/retune` replaces the assumption by adjusting the model's sensor stage until
+the sim reproduces the measured composite lag.
 
 ## Cascade: group temperature is the target
 

@@ -103,12 +103,23 @@ int runIdent(SimHarness& h) {
 
     h.run(900.0f, log);  // settle in regulation: gives duty_ss + T_ss
 
+    // Mirrors tools/tune_capture.py RECIPES["id"] exactly.
     evt("#EVT %lu id_off t=%.0f\n", 420.0);
     h.forceDuty(0.0f);
     h.run(420.0f, log);
     evt("#EVT %lu id_end\n");
 
-    evt("#EVT %lu id_duty d=%.3f t=%.0f\n", 0.4, 120.0);
+    evt("#EVT %lu id_duty d=%.3f t=%.0f\n", 1.0, 30.0);  // lag pulse
+    h.forceDuty(1.0f);
+    h.run(30.0f, log);
+    evt("#EVT %lu id_end\n");
+
+    evt("#EVT %lu id_off t=%.0f\n", 180.0);
+    h.forceDuty(0.0f);
+    h.run(180.0f, log);
+    evt("#EVT %lu id_end\n");
+
+    evt("#EVT %lu id_duty d=%.3f t=%.0f\n", 0.4, 120.0);  // C_step
     h.forceDuty(0.4f);
     h.run(120.0f, log);
     evt("#EVT %lu id_end\n");
