@@ -19,6 +19,15 @@ struct NtcConfig {
     float rSeries = 10000.0f;    // Ohm, node -> GND
     float vSupplyMv = 3300.0f;   // divider supply
     float offsetC = 0.0f;        // one-point calibration trim
+
+    // Per-sensor Steinhart-Hart curve (1/T = A + B*lnR + C*ln^3 R), fitted
+    // from a DS18B20 reference run with tools/calibrate.py (see
+    // docs/tuning-hardware.md step 0). When enabled it replaces the Beta
+    // equation; offsetC still applies on top.
+    bool useSteinhartHart = false;
+    float shA = 0.0f;
+    float shB = 0.0f;
+    float shC = 0.0f;
 };
 
 enum class RailFault : uint8_t { None, Open, Short };

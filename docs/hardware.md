@@ -76,6 +76,28 @@ self-heating is negligible (<0.3 mW into brass).
 **ADC1 only:** GPIO0–4. ADC2 is unusable while WiFi is active on the C3 —
 that is why the NTCs sit on GPIO3/GPIO4.
 
+## Optional: DS18B20 reference pair for the calibration run
+
+For the one-time per-NTC curve calibration (observer firmware,
+[tuning-hardware.md](tuning-hardware.md) step 0), two DS18B20s share a
+1-Wire bus on GPIO7:
+
+```mermaid
+flowchart TB
+    V33(["3V3"]) --- PU["4.7 kΩ pullup"] --- BUS((" "))
+    BUS --- GPIO(["GPIO7"])
+    BUS --- DS1["DS18B20 #1<br/>clamped WITH the boiler NTC"]
+    BUS --- DS2["DS18B20 #2<br/>clamped WITH the group NTC"]
+```
+
+- Each probe must be clamped **touching its NTC** — co-location is what makes
+  the comparison valid; the boiler shell has gradients of several °C.
+- Buy from a reputable source: counterfeit DS18B20s are common and drift
+  above 85 °C. The calibration tool cross-checks the two probes against each
+  other at cold start and refuses to fit if they disagree by >0.5 °C.
+- The probes and the bus are removed again after the run — the control
+  firmware has no 1-Wire code.
+
 ## Pin map
 
 | Signal | GPIO | Note |

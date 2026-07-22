@@ -40,7 +40,13 @@ portafilter with a blind basket") and patient — scenarios take many minutes.
    pending scenarios and ask whether to resume or start fresh.
 4. Ask for the ambient room temperature once; pass `--ambient` to every
    capture.
-5. Dry-run mode: if the user has no hardware attached, substitute
+5. If `ntcBoilerConfig()` / `ntcGroupConfig()` in `src/config.h` still use
+   the default Beta curve (no Steinhart-Hart coefficients pasted), mention
+   the optional pre-retrofit observer calibration
+   (docs/tuning-hardware.md step 0) — it needs the stock bimetal still in
+   place, so it cannot be retrofitted later without rewiring; the session
+   can proceed without it.
+6. Dry-run mode: if the user has no hardware attached, substitute
    `--replay <sim log>` for `--port …` (generate one with
    `.pio/build/native/program --scenario <s> --serial-format > x.log`).
 

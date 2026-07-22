@@ -88,6 +88,12 @@ validated in CI against the simulator's known truth
 (`--scenario ident --serial-format`), so the tooling is proven before it
 touches the machine.
 
+Before the retrofit, an optional one-time **sensor calibration run**
+(`pio run -e esp32c3-observer`) clamps a DS18B20 reference against each NTC
+while the stock bimetal still runs the machine; `tools/calibrate.py` fits a
+custom Steinhart–Hart curve per NTC from the recorded sweep (details in
+[docs/tuning-hardware.md](docs/tuning-hardware.md), step 0).
+
 For a fully guided session, run the **`/tune-wizard`** skill in Claude Code:
 it walks you through the whole scenario suite at the machine (cold start,
 ident, setpoint step, espresso, flush, big draw), runs the captures as

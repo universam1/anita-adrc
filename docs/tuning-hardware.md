@@ -56,16 +56,43 @@ CI and dry runs, no hardware). Capture quality is checked per scenario with
 
 ## Step by step
 
-### 0. Prerequisites
+### 0. Per-NTC curve calibration (optional, pre-retrofit, once)
 
-Bench bring-up done per [hardware.md](hardware.md): NTCs verified in ice and
-boiling water, SSR LED test, machine integrated behind the factory safety
-thermostat. `pip install -r tools/requirements.txt`.
+Best done **before** the retrofit, while the stock bimetal still controls the
+machine. It replaces the generic Beta curve with a fitted Steinhart–Hart
+curve per NTC — a perfect-fit mV→°C formula for *your* two sensors.
 
-### 1. Sensor calibration (once)
+1. Clamp one DS18B20 together with each NTC (touching it — see
+   [hardware.md](hardware.md) for the 1-Wire wiring on GPIO7).
+2. Flash the observer firmware: `pio run -e esp32c3-observer -t upload`.
+   It streams raw NTC millivolts + both reference temps, one row per ~0.8 s
+   (the DS18B20 conversion is deliberately the rate limiter; both convert in
+   parallel).
+3. Machine fully cold, start recording, then power the machine on:
+   `python tools/tune_capture.py --port /dev/ttyACM0 --name sensor_cal`
+4. **At ~55 °C, power-cycle the machine a few times over ~5 minutes** (short
+   on/off bursts). This creates mid-band turning points — without them the
+   fit has data only at ambient and at the bimetal band, and the curve is
+   unconstrained in between.
+5. Let the bimetal cycle for ~30 min, stop, then:
+   `python tools/calibrate.py captures/<date>-sensor_cal.log`
+6. Paste the printed coefficients into `ntcBoilerConfig()` /
+   `ntcGroupConfig()` in `src/config.h`.
 
-At steady ~95 °C compare the boiler NTC against a trusted thermometer and put
-the difference into `NtcConfig::offsetC` (`src/main.cpp` NtcAdc construction).
+The tool only uses quasi-static samples (dwells and turning points — this
+cancels the sensors' different lags, which is why the run design matters),
+bin-averages them, cross-checks the two references against each other at
+cold start (counterfeit detection), and reports residuals above 85 °C
+separately since the DS18B20 spec degrades there.
+`python tools/calibrate.py --selftest` proves the whole fit pipeline against
+synthetic truth (wired into CI).
+
+### 1. Operating-point anchor (once)
+
+At steady ~95 °C compare the boiler NTC against a trusted thermometer (or
+the boiling-point method from [hardware.md](hardware.md)) and put any
+remaining difference into `NtcConfig::offsetC`. With a step-0 calibration
+this is typically already within ±0.2 °C; without it, expect to trim ±1 °C.
 Repeat for the group channel. Reflash.
 
 ### 2. First power-on, duty-capped

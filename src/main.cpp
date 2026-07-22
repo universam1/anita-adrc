@@ -41,8 +41,8 @@ using anita::Fault;
 
 namespace {
 
-NtcAdc ntcBoiler(PIN_NTC_BOILER);
-NtcAdc ntcGroup(PIN_NTC_GROUP);
+NtcAdc ntcBoiler(PIN_NTC_BOILER, ntcBoilerConfig());
+NtcAdc ntcGroup(PIN_NTC_GROUP, ntcGroupConfig());
 SsrOutput ssr;
 UiButton button;
 DisplayUi display;

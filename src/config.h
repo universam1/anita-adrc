@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Thermistor.h"
+
 // ---------------------------------------------------------------------------
 // Hardware — 01Space ESP32-C3-0.42LCD board
 // ---------------------------------------------------------------------------
@@ -10,6 +12,22 @@ constexpr int PIN_I2C_SCL = 6;
 constexpr int PIN_BUTTON = 9;      // boot button, active low, needs pullup
 constexpr int PIN_NTC_BOILER = 3;  // ADC1_CH3
 constexpr int PIN_NTC_GROUP = 4;   // ADC1_CH4
+
+// Per-channel NTC curves. Defaults are the generic Beta model; after the
+// observer calibration run (docs/tuning-hardware.md step 0) paste the
+// Steinhart-Hart coefficients printed by tools/calibrate.py here.
+inline anita::NtcConfig ntcBoilerConfig() {
+    anita::NtcConfig cfg;
+    // cfg.useSteinhartHart = true;
+    // cfg.shA = ...f; cfg.shB = ...f; cfg.shC = ...f;
+    return cfg;
+}
+inline anita::NtcConfig ntcGroupConfig() {
+    anita::NtcConfig cfg;
+    // cfg.useSteinhartHart = true;
+    // cfg.shA = ...f; cfg.shB = ...f; cfg.shC = ...f;
+    return cfg;
+}
 
 // SSR drive is ACTIVE-LOW current sinking: the SSR input LED hangs from 3V3
 // and this pin sinks it to fire. Floating / Hi-Z / HIGH are all safe OFF
