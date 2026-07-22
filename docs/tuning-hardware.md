@@ -68,8 +68,27 @@ curve per NTC — a perfect-fit mV→°C formula for *your* two sensors.
    It streams raw NTC millivolts + both reference temps, one row per ~0.8 s
    (the DS18B20 conversion is deliberately the rate limiter; both convert in
    parallel).
-3. Machine fully cold, start recording, then power the machine on:
-   `python tools/tune_capture.py --port /dev/ttyACM0 --name sensor_cal`
+3. Machine fully cold, start recording, then power the machine on.
+   Recommended (same capture pipeline as everything else):
+
+   ```bash
+   python tools/tune_capture.py --port /dev/ttyACM0 --name sensor_cal
+   ```
+
+   Plain-Linux alternatives that work just as well (the observer re-prints
+   the CSV header every minute, so joining a running stream is fine):
+
+   ```bash
+   # bare serial -> file
+   stty -F /dev/ttyACM0 115200 raw -echo
+   cat /dev/ttyACM0 | tee captures/sensor_cal.log
+
+   # or via PlatformIO's monitor
+   pio device monitor -e esp32c3-observer | tee captures/sensor_cal.log
+   ```
+
+   `calibrate.py` ignores anything that isn't a CSV row or header, so
+   monitor banners and `#INFO` lines in the file are harmless.
 4. **At ~55 °C, power-cycle the machine a few times over ~5 minutes** (short
    on/off bursts). This creates mid-band turning points — without them the
    fit has data only at ambient and at the bimetal band, and the curve is

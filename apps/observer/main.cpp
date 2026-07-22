@@ -80,6 +80,16 @@ void setup() {
 void loop() {
     delay(CONVERSION_MS);
 
+    // Re-print the CSV header once a minute: recording usually starts after
+    // boot, and tools/calibrate.py needs a header line to parse the rows.
+    static uint32_t lastHeaderMs = 0;
+    if (millis() - lastHeaderMs > 60000) {
+        lastHeaderMs = millis();
+        Serial.println(
+            "millis,ntc_boiler_mv,ntc_group_mv,ref_boiler_C,ref_group_C,"
+            "ntc_boiler_C,ntc_group_C");
+    }
+
     float ref[2] = {NAN, NAN};
     for (int i = 0; i < dsCount; ++i) {
         const float t = ds.getTempC(addr[i]);
