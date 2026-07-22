@@ -30,6 +30,11 @@ struct CoreConfig {
 
     // Consecutive plausible samples required to leave BOOT.
     int bootSamples = 3;
+
+    // Bandwidth of the detection-only fast ESO. The control ESO stays slow
+    // (its z2 feeds the control law); this one only feeds the DrawDetector's
+    // threshold, so its extra noise costs nothing and buys seconds.
+    float detWo = 1.5f;
 };
 
 struct CoreInputs {
@@ -67,8 +72,12 @@ public:
     void bumpSetpoint(float deltaC);  // button: +0.5 / -0.5, clamped
     float setpoint() const { return setpointC_; }
 
-    // Duty actually delivered by the modulator since the last step.
-    void setAppliedDuty(float d) { adrc_.setAppliedDuty(d); }
+    // Duty actually delivered by the modulator since the last step (feeds
+    // both the control ESO and the fast detection ESO).
+    void setAppliedDuty(float d) {
+        adrc_.setAppliedDuty(d);
+        detEso_.setAppliedDuty(d);
+    }
 
     Adrc& adrc() { return adrc_; }
     GroupComp& groupComp() { return groupComp_; }
@@ -80,6 +89,7 @@ private:
 
     CoreConfig cfg_;
     Adrc adrc_;
+    Adrc detEso_;  // fast detection-only observer (duty output discarded)
     GroupComp groupComp_;
     DrawDetector drawDetect_;
     SafetyMonitor safety_;
@@ -89,6 +99,8 @@ private:
     int bootGoodSamples_ = 0;
     float lastBoilerSetC_ = 0.0f;
     bool regulationReached_ = false;
+    float groupHist_[3] = {0.0f, 0.0f, 0.0f};  // for the group rise rate
+    int groupHistFill_ = 0;
 };
 
 }  // namespace anita

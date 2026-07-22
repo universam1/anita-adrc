@@ -90,13 +90,18 @@ static void test_single_espresso_draw() {
     h.model().startDraw(30.0f, 30.0f);
     Metrics m;
     float lastOutsideBand = 0.0f;
+    float detectedAt = -1.0f;
     h.run(330.0f, [&](const auto& s) {
         collect(m, s);
+        if (detectedAt < 0.0f && s.out.drawActive) detectedAt = s.tS;
         if (s.tS > 930.0f && std::fabs(s.groupSensC - kGroupSet) > 0.5f)
             lastOutsideBand = s.tS;
     });
 
     TEST_ASSERT_FALSE(m.sawFault);
+    // Even a single small espresso must be detected, within the draw
+    TEST_ASSERT_TRUE_MESSAGE(detectedAt > 0.0f, "espresso not detected");
+    TEST_ASSERT_TRUE(detectedAt <= 900.0f + 18.0f);  // measured ~13 s
     // A single espresso barely moves the group (flow-heating compensates)
     TEST_ASSERT_TRUE(m.minGroup > kGroupSet - 1.5f);
     // Recovered to +-0.5 C within 60 s of draw end
@@ -120,8 +125,9 @@ static void test_max_draw_two_cups() {
 
     TEST_ASSERT_FALSE(m.sawFault);
     // 1000 W cannot hold the setpoint: duty must slam to 100% promptly
+    // (fast detection ESO + group-rise signature; measured ~4.6 s)
     TEST_ASSERT_TRUE_MESSAGE(dutySatAt > 0.0f, "duty never saturated");
-    TEST_ASSERT_TRUE(dutySatAt <= 900.0f + 15.0f);
+    TEST_ASSERT_TRUE(dutySatAt <= 900.0f + 8.0f);
     TEST_ASSERT_TRUE_MESSAGE(m.sawDraw, "draw never detected");
     // Clean recovery without windup: back within 1 C of the group setpoint
     // in bounded time, never near the safety trip

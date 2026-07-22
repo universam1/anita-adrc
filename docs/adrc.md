@@ -143,15 +143,33 @@ clamped to [`minBoost`, `maxBoost`] = [−5, +15] °C and an absolute ceiling of
 
 ## Draw detection
 
-`z2` *is* a live disturbance wattmeter. A draw pulls cold water in and shows
-up as a negative step in `z2` within seconds, before the lagged NTC moves.
-`DrawDetector` triggers on `z2 < baseline − 0.05 K/s` (baseline = slow EMA,
-frozen during draws), debounced 1 s, capped at 90 s with a return-to-baseline
-lockout. While a draw is active the duty is fed forward to 100 % (unless the
-boiler is already above target).
+Two independent signatures, either one triggers (`DrawDetector`):
 
-Detection is enabled only after regulation has first been reached — the
-warm-up transient in `z2` would otherwise false-trigger.
+1. **Fast-observer z2.** A draw pulls cold water in — a negative step in the
+   disturbance estimate. The *control* ESO must stay slow (its z2 feeds the
+   control law; noise there becomes duty jitter), so detection runs on a
+   **second, detection-only ESO** with ωo = 1.5 rad/s (`CoreConfig::detWo`)
+   whose noisier z2 only ever meets a threshold:
+   `z2_det < baseline − 0.05 K/s`.
+2. **Group rise rate.** Hot water flowing through the group heats it within
+   seconds — strongest exactly when the boiler signature is weakest. Trigger:
+   group slope `> baseline + 0.04 K/s`. This is what catches warm-up flushes
+   quickly; a steady-state espresso barely warms an already-hot group, so
+   there the z2 path dominates.
+
+Both baselines are slow EMAs, frozen during draws; 1 s debounce, 90 s cap
+with a return-to-baseline lockout. While a draw is active the duty is fed
+forward to 100 % (unless the boiler is already above target). Detection is
+enabled only after regulation has first been reached — warm-up transients
+would otherwise false-trigger.
+
+Simulated latencies (asserted in CI): 250 ml draw detected in ~4.6 s,
+warm-up flush ~9 s, single espresso ~13 s — the floor is physical: the draw
+acts on the *water*, and the shell NTC only sees it through the water↔brass
+coupling (τ ≈ C_brass/k_bw ≈ 25 s), unlike the heater which drives the brass
+directly. Sub-second detection would require tapping the brew switch with an
+optocoupler on a free GPIO (future hardware option, not implemented). The
+display shows `brew` while a draw is active; HA gets a binary sensor.
 
 ## Tuning procedure (sim first, then hardware)
 

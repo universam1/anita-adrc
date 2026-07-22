@@ -14,9 +14,18 @@ const char* stateName(State s) {
     return "?";
 }
 
+namespace {
+AdrcParams detectionParams(const CoreConfig& cfg) {
+    AdrcParams p = cfg.adrc;
+    p.wo = cfg.detWo;
+    return p;
+}
+}  // namespace
+
 ControllerCore::ControllerCore(const CoreConfig& cfg)
     : cfg_(cfg),
       adrc_(cfg.adrc),
+      detEso_(detectionParams(cfg)),
       groupComp_(cfg.groupComp),
       drawDetect_(cfg.drawDetect),
       safety_(cfg.safety),
@@ -47,12 +56,24 @@ CoreOutputs ControllerCore::step(const CoreInputs& in) {
         bootGoodSamples_ = plausible(in) ? bootGoodSamples_ + 1 : 0;
         if (bootGoodSamples_ >= cfg_.bootSamples) {
             adrc_.reset(in.boilerC);
+            detEso_.reset(in.boilerC);
             state_ = State::Heatup;
         } else {
             out.state = State::Boot;
             return out;  // duty 0 until the sensors prove themselves
         }
     }
+
+    // Group rise rate over the last 2*Ts (draw signature: flow heats the
+    // group within seconds).
+    groupHist_[0] = groupHist_[1];
+    groupHist_[1] = groupHist_[2];
+    groupHist_[2] = in.groupC;
+    if (groupHistFill_ < 3) ++groupHistFill_;
+    const float groupSlope =
+        (groupHistFill_ >= 3 && in.dtS > 0.0f)
+            ? (groupHist_[2] - groupHist_[0]) / (2.0f * in.dtS)
+            : 0.0f;
 
     // Group compensation first: it produces this cycle's boiler setpoint.
     const bool drawWasActive = drawDetect_.active();
@@ -79,16 +100,20 @@ CoreOutputs ControllerCore::step(const CoreInputs& in) {
     // saturates at full duty (the ESO keeps converging => bumpless handover).
     float duty = adrc_.update(boilerSet, in.boilerC);
 
-    // Draw detection on the fresh disturbance estimate; feed duty forward to
-    // full power during the draw, unless the boiler is already above target.
-    // Enabled only once regulation has been reached — the warm-up transient
-    // in z2 would otherwise false-trigger.
+    // The fast detection observer sees the same measurements; only its z2 is
+    // consumed (as the DrawDetector's trigger signal).
+    detEso_.update(boilerSet, in.boilerC);
+
+    // Draw detection on the fast disturbance estimate + the group rise rate;
+    // feed duty forward to full power during the draw, unless the boiler is
+    // already above target. Enabled only once regulation has been reached —
+    // the warm-up transients would otherwise false-trigger.
     if (in.boilerC >= boilerSet - cfg_.heatupBandC) regulationReached_ = true;
-    const bool drawActive =
-        drawDetect_.step(adrc_.z2(), in.dtS, regulationReached_);
+    const bool drawActive = drawDetect_.step(detEso_.z2(), groupSlope, in.dtS,
+                                             regulationReached_);
     if (drawActive && in.boilerC < boilerSet + 0.5f) {
         duty = cfg_.adrc.uMax;
-        adrc_.setAppliedDuty(duty);  // keep the ESO honest about the override
+        setAppliedDuty(duty);  // keep both ESOs honest about the override
     }
 
     sin.duty = deliveredDuty;
